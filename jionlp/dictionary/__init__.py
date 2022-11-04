@@ -31,7 +31,7 @@ from .dictionary_loader import traditional_simplified_loader
 from .dictionary_loader import word_distribution_loader
 from .dictionary_loader import world_location_loader
 from .dictionary_loader import xiehouyu_loader
-
+from .dictionary_loader import china_reign_title_loader
 
 DICTIONARY_DESCRIPTION = {
     'char_distribution.json': '统计中文文本全量语料中有效 utf-8 字符的频次与分布',
@@ -57,5 +57,6 @@ DICTIONARY_DESCRIPTION = {
     'word_distribution.json': '统计中文文本全量语料中，jieba 分词后的词频统计，删除了概率低于1e-6的中文分词结果，与低于1e-5的非中文内容',
     'world_location.txt': '世界地名词典，包括洲、国家两级，国家名下包括国家全名、首都（首府）、主要城市（不完全）等信息。',
     'xiehouyu.txt': '对网络上搜集的歇后语做汇总，质量较高，几乎无错漏；共计 17000 多条。其中',
+    'china_reign_title.json': '从汉武帝开始的皇帝年号，对应着皇帝名称、起讫时间、使用时长'
 }
 

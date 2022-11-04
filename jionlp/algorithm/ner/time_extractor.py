@@ -19,11 +19,23 @@ TODO:
 
 import re
 import time
+import cn2an
 
 from jionlp.rule.rule_pattern import TIME_CHAR_STRING, \
-    FAKE_POSITIVE_START_STRING, FAKE_POSITIVE_END_STRING
+    FAKE_POSITIVE_START_STRING, FAKE_POSITIVE_END_STRING, REIGN_TITLE_CHAR_STRING
 from jionlp.rule import extract_parentheses, remove_parentheses
 from jionlp.gadget.time_parser import TimeParser
+from enum import Enum
+
+
+class FilteredReason(Enum) :
+    none = "none"
+    fake_positive_start_pattern = "fake_positive_start_pattern"
+    fake_positive_end_pattern = "fake_positive_end_pattern"
+    strip_not_eq = "strip_not_eq"
+    de_in_start_or_end = "的_in_start_or_end"
+    paren_not_match = "paren_not_match"
+    symbol_after_chinese = "symbol_after_chinese"
 
 
 class TimeExtractor(object):
@@ -72,7 +84,9 @@ class TimeExtractor(object):
 
     def _prepare(self):
         self.parse_time = TimeParser()
-        self.time_string_pattern = re.compile(TIME_CHAR_STRING)  # 该正则存在假阴风险
+        recall_string_re = "(" + REIGN_TITLE_CHAR_STRING + TIME_CHAR_STRING[1:]
+        #print(recall_string_re)
+        self.time_string_pattern = re.compile(recall_string_re)  # 该正则存在假阴风险
 
         self.fake_positive_start_pattern = re.compile(FAKE_POSITIVE_START_STRING)
         self.fake_positive_end_pattern = re.compile(FAKE_POSITIVE_END_STRING)
@@ -88,6 +102,15 @@ class TimeExtractor(object):
         self.unit_pattern = re.compile(r'(多)?[万亿元]')  # 四数字后接单位，说明非年份
 
         self.single_char_time = set(['春', '夏', '秋', '冬'])
+        self.filtered_reason = FilteredReason.none
+    
+    def digit_chinese_mixed(self, sub_string):
+        p1 = re.compile(r"\d+")
+        p2 = re.compile(r"[一二三四五六七八九十百千万零〇]+")
+        if re.search(p1, sub_string) and re.search(p2, sub_string):
+            return True
+        else:
+            return False
 
     def __call__(self, text, time_base=time.time(), with_parsing=True, ret_all=False,
                  ret_type='str', ret_future=False, period_results_num=None):
@@ -100,6 +123,7 @@ class TimeExtractor(object):
         for candidate in candidates_list:
             offset = [0, 0]
             bias = 0
+            #print(" handle candidate: ", candidate)
             while candidate['offset'][0] + offset[1] < candidate['offset'][1]:
                 # 此循环意在找出同一个 candidate 中包含的多个 time_entity
 
@@ -122,19 +146,21 @@ class TimeExtractor(object):
                             # 说明非真实年份，跳回
                             bias += offset[1]
                             continue
-
+                    dig_chn_mixed = self.digit_chinese_mixed(true_string)
                     if with_parsing:
                         time_entity_list.append(
                             {'text': true_string,
                              'offset': [candidate['offset'][0] + bias + offset[0],
                                         candidate['offset'][0] + bias + offset[1]],
                              'type': result['type'],
+                             'dcmix': dig_chn_mixed,
                              'detail': result})
                     else:
                         time_entity_list.append(
                             {'text': true_string,
                              'offset': [candidate['offset'][0] + bias + offset[0],
                                         candidate['offset'][0] + bias + offset[1]],
+                             'dcmix': dig_chn_mixed,
                              'type': result['type']})
                     bias += offset[1]
                 else:
@@ -150,89 +176,177 @@ class TimeExtractor(object):
         此问题产生的原因在于，parse_time 工具对某些不符合要求的字符串也能成功解析，造成假阳性。
         """
         if self.fake_positive_start_pattern.search(sub_string[0]):
+            self.filtered_reason = FilteredReason.fake_positive_start_pattern
             return False
 
         if self.fake_positive_end_pattern.search(sub_string[-1]):
+            self.filtered_reason = FilteredReason.fake_positive_end_pattern
             return False
 
         if len(sub_string) != len(sub_string.strip()):
+            self.filtered_reason = FilteredReason.strip_not_eq
             return False
 
         # 的 不可以在句首或句尾
         if '的' in sub_string[0] or '的' in sub_string[-1]:
+            self.filtered_reason = FilteredReason.de_in_start_or_end
             return False
 
         # 括号造成的边界错误
         if sub_string[0] in ')）' or sub_string[-1] in '(（':
+            self.filtered_reason = FilteredReason.paren_not_match
+            return False
+        # 汉字后面有点号
+        if sub_string.endswith(".") and not re.match(r"[a-zA-Z0-9]", sub_string[-2]):
+            self.filtered_reason = FilteredReason.symbol_after_chinese
             return False
 
+        self.filtered_reason = FilteredReason.none
         return True
 
     def _grid_search_1(self, time_candidate):
         """ 取消 parse_time 中 strict 限制，从长至短，先左后右依次缩短 time_candidate，
         直到解析错误或解析结果出错
         """
-
+    def year_after_format(self, sub_string):
+        pattern = re.compile(r"\d{1,2}/\d{1,2}/\d{4}")
+        a = sub_string
+        for m in re.finditer(pattern, a):
+            start, end = m.span()
+            a = a[:start]+a[end-4:end] +"/" +a[start:end-5]+a[end:]
+        return a
+    
     def grid_search(self, time_candidate, time_base=time.time(),
                     ret_type='str', ret_future=False, period_results_num=None):
+        def replace_parse(sub_string_for_parse):
+            p = re.compile(r"([0-9]+|[一二三四五六七八九十〇零]+)")
+            for m in re.finditer(p, sub_string_for_parse):
+                start, end = m.span()
+                number = 0
+                try:
+                    number = int(sub_string_for_parse[start:end])
+                except:
+                    try:
+                        number = cn2an.cn2an(sub_string_for_parse[start:end])
+                    except:
+                        continue
+                if number > 300:
+                    continue
+                replaced_sub_string = sub_string_for_parse[:start] + "12" + sub_string_for_parse[end:]
+                #print(" -> replaced:", replaced_sub_string)
+                try:
+                    result = self.parse_time(
+                        replaced_sub_string, time_base=time_base, strict=True,
+                        ret_type=ret_type, ret_future=ret_future,
+                        period_results_num=period_results_num)
+                    print(result)
+                    return "", {"type":"time_maybe_wrong"}, None
+                except:
+                    continue
+            try:
+                na = sub_string_for_parse
+                for _ in range(100):
+                    m = re.search(re.compile(r"\d+"), na)
+                    if m:
+                        na = na[:m.span()[0]] + cn2an.an2cn(m.group(0)) + na[m.span()[1]:]
+                    else:
+                        break
+                #print(" -> replaced:", na)
+                result = self.parse_time(
+                        na, time_base=time_base, strict=True,
+                        ret_type=ret_type, ret_future=ret_future,
+                        period_results_num=period_results_num)
+                return "", {"type":"time_maybe_wrong"}, None
+            except:
+                pass
+            na = sub_string_for_parse
+            for _ in range(100):
+                m = re.search(re.compile(r"[一二三四五六七八九十百千万〇零]+"), na)
+                if m:
+                    na = na[:m.span()[0]] + str(cn2an.cn2an(m.group(0))) + na[m.span()[1]:]
+                else:
+                    break
+            try:
+                #print(" -> replaced:", na)
+                result = self.parse_time(
+                        na, time_base=time_base, strict=True,
+                        ret_type=ret_type, ret_future=ret_future,
+                        period_results_num=period_results_num)
+                return "", {"type":"time_maybe_wrong"}, None
+            except (ValueError, Exception):
+                pass
+            return None, None, None
+            
         """ 全面搜索候选时间字符串，从长至短，较优 """
         length = len(time_candidate)
         for i in range(length):  # 控制总长，若想控制单字符的串也被返回考察，此时改为 length + 1
             for j in range(i):  # 控制偏移
+                offset = [j, length - i + j + 1]
+                sub_string = time_candidate[j: offset[1]]
+
+                # 处理假阳性。检查子串，对某些产生歧义的内容进行过滤。
+                # 原因在于，parse_time 会对某些不符合要求的字符串做正确解析.
+                if not self._filter(sub_string):
+                    #print("filted:[{}]".format(sub_string), self.filtered_reason)
+                    continue
+
+                # rule 3: 若子串中包含 ”的“ 字会对结果产生影响，则先将 ”的“ 字删除后再进行解析。
+                sub_string_for_parse = sub_string.replace('的', '')
+
+                # 形如10/01/2000 10:00:41.01这样的格式，无法识别，需要交换年的位置
+                sub_string_for_parse = self.year_after_format(sub_string_for_parse)
+                
+                # rule 4: 字符串中若包含空格，会对结果产生影响，则先将 “ ” 删除后解析。
+                sub_string_for_parse = sub_string_for_parse.replace(' ', '')
+
+                # rule 5: 对于一些特殊的补充性时间字符串，也需要特殊对待，将括号去除后再进行解析。
+                # 一般为 周 对 日的补充，如“2021年11月1日（下周一晚）19:30-20:30”
+                # 该规则依然简陋，稳定性不够好
+                sub_parentheses = extract_parentheses(sub_string_for_parse, parentheses='()（）')
+                if '周' in ''.join(sub_parentheses) or '星期' in ''.join(sub_parentheses):
+                    sub_string_for_parse = remove_parentheses(sub_string_for_parse, parentheses='()（）')
+
+                # rule 6: 对于数字为起始或结尾的字符串，过滤之。
+                # 如：342127197212178212 将 2017 和 1972 抽取为年份
+                if self.num_pattern.search(sub_string_for_parse[0]):
+                    if j - 1 >= 0:
+                        if self.num_pattern.search(time_candidate[j - 1]):
+                            continue
+                if self.num_pattern.search(sub_string_for_parse[-1]):
+                    if offset[1] < length:
+                        if self.num_pattern.search(time_candidate[offset[1]]):
+                            continue
+                #print("sub_string_for_parse with parse_time:[{}]".format(sub_string_for_parse))
                 try:
-                    offset = [j, length - i + j + 1]
-                    sub_string = time_candidate[j: offset[1]]
-
-                    # 处理假阳性。检查子串，对某些产生歧义的内容进行过滤。
-                    # 原因在于，parse_time 会对某些不符合要求的字符串做正确解析.
-                    if not self._filter(sub_string):
-                        continue
-
-                    # rule 3: 若子串中包含 ”的“ 字会对结果产生影响，则先将 ”的“ 字删除后再进行解析。
-                    sub_string_for_parse = sub_string.replace('的', '')
-
-                    # rule 4: 字符串中若包含空格，会对结果产生影响，则先将 “ ” 删除后解析。
-                    sub_string_for_parse = sub_string_for_parse.replace(' ', '')
-
-                    # rule 5: 对于一些特殊的补充性时间字符串，也需要特殊对待，将括号去除后再进行解析。
-                    # 一般为 周 对 日的补充，如“2021年11月1日（下周一晚）19:30-20:30”
-                    # 该规则依然简陋，稳定性不够好
-                    sub_parentheses = extract_parentheses(sub_string_for_parse, parentheses='()（）')
-                    if '周' in ''.join(sub_parentheses) or '星期' in ''.join(sub_parentheses):
-                        sub_string_for_parse = remove_parentheses(sub_string_for_parse, parentheses='()（）')
-
-                    # rule 6: 对于数字为起始或结尾的字符串，过滤之。
-                    # 如：342127197212178212 将 2017 和 1972 抽取为年份
-                    if self.num_pattern.search(sub_string_for_parse[0]):
-                        if j - 1 >= 0:
-                            if self.num_pattern.search(time_candidate[j - 1]):
-                                continue
-                    if self.num_pattern.search(sub_string_for_parse[-1]):
-                        if offset[1] < length:
-                            if self.num_pattern.search(time_candidate[offset[1]]):
-                                continue
-
                     result = self.parse_time(
                         sub_string_for_parse, time_base=time_base, strict=True,
                         ret_type=ret_type, ret_future=ret_future,
                         period_results_num=period_results_num)
 
                     return sub_string, result, offset
-                except (ValueError, Exception):
-                    continue
+                except (ValueError, Exception) as e:
+                    #print(e, "try again after replace")
+                    # 如果替换掉部分数字，结果可解析，也认为是正确的
+                    r1, r2, r3 = replace_parse(sub_string_for_parse)
+                    #print("result:", r2)
+                    if r1 == None:
+                        continue
+                    else:
+                        return sub_string, r2, offset
 
         return None, None, None
 
+
     def _grid_search_2(self, time_candidate):
         """ 全面搜索候选时间字符串，从前至后，从长至短 """
-        print(time_candidate)
+        #print(time_candidate)
         length = len(time_candidate)
         for i in range(length - 1):  # 控制起始点
             for j in range(length, i, -1):  # 控制终止点
                 try:
                     offset = [i, j]
                     sub_string = time_candidate[i: j]
-                    print(sub_string)
+                    #print(sub_string)
                     # 处理假阳性。检查子串，对某些产生歧义的内容进行过滤。
                     # 原因在于，parse_time 会对某些不符合要求的字符串做正确解析.
                     if not TimeExtractor._filter(sub_string):
@@ -269,7 +383,8 @@ class TimeExtractor(object):
                 idx_count += matched_res.span()[1]
             else:
                 break
-
+        #for tc in time_candidates_list:
+        #    print("{} 候选：{}".format(" -> ", tc))
         return time_candidates_list
 
 

@@ -13,8 +13,8 @@ class TestTimeExtractor(unittest.TestCase):
         """ test jio.ner.extract_time """
 
         text_string_list = [
-            ['大概六天后的3时1刻需要处理东西', [{'text': '六天后的3时1刻', 'offset': [2, 10], 'type': 'time_point'}]],
-            ['时间定于2021年4月20日11:00时至2021年4月25日17:00时。', [{'text': '2021年4月20日11:00时至2021年4月25日17:00时', 'offset': [4, 37], 'type': 'time_span'}]],
+            #['大概六天后的3时1刻需要处理东西', [{'text': '六天后的3时1刻', 'offset': [2, 10], 'type': 'time_point'}]],
+            ['时间定于2021年4月20日11:00时至2021年4月25日17:00时。', [{'text': '2021年4月20日11:00时至2021年4月25日17:00时', 'offset': [4, 37], "dcmix":False, 'type': 'time_span'}]],
             ['身份证号140302197706220124。', []],
             ['今年腊月18000吨物品被寄出。', [{'text': '今年腊月', 'offset': [0, 4], 'type': 'time_point'}]],
             ['腊月18，已经过了好几天。', [{'text': '腊月18', 'offset': [0, 4], 'type': 'time_point'}]],
@@ -32,7 +32,10 @@ class TestTimeExtractor(unittest.TestCase):
             time_res = jio.ner.extract_time(
                 item[0], time_base=time.time(), with_parsing=False)
             print(item[0])
-            self.assertEqual(time_res, item[1])
+            for i in range(len(item[1])):
+                for k,v in item[1][i].items():
+                    self.assertEqual(time_res[i][k], v)
+            #self.assertEqual(time_res, item[1])
 
 
 if __name__ == '__main__':

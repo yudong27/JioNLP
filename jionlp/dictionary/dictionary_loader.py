@@ -10,6 +10,7 @@
 import os
 import re
 import math
+import json
 
 from jionlp import logging
 from jionlp.util.file_io import read_file_by_line
@@ -33,6 +34,7 @@ __all__ = ['char_distribution_loader', 'char_radical_loader',
            'telecom_operator_loader',
            'traditional_simplified_loader',
            'word_distribution_loader',
+           'china_reign_title_loader',
            'world_location_loader', 'xiehouyu_loader', 'STRUCTURE_DICT']
 
 STRUCTURE_DICT = {
@@ -546,4 +548,12 @@ def xiehouyu_loader():
     xiehouyu = [item.split('\t') for item in xiehouyu]
 
     return xiehouyu
+
+def china_reign_title_loader():
+    ''' 加载皇帝年号，共计531条
+    '''
+    reign_path = os.path.join(GRAND_DIR_PATH, 'dictionary', 'china_reign_title.json')
+    with open(reign_path) as f:
+        data = json.loads(f.read())
+    return data
 

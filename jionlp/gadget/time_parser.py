@@ -74,12 +74,14 @@ import re
 import time
 import datetime
 import traceback
+import cn2an
 
 from jionlp import logging
 from jionlp.util.funcs import bracket, bracket_absence, absence
 from .money_parser import MoneyParser
 from .lunar_solar_date import LunarSolarDate
 from jionlp.rule.rule_pattern import *
+from jionlp.dictionary import china_reign_title_loader
 
 
 class TimePoint(object):
@@ -181,6 +183,7 @@ class TimeParser(object):
         self.time_point = None
         self.time_base_handler = None
         self.future_time = None
+        self.china_reign_title = china_reign_title_loader()
 
     def _preprocess(self):
         # 20世纪 key值
@@ -828,6 +831,20 @@ class TimeParser(object):
         # 解析 time_base 为 handler
         self.time_base_handler = TimeParser._convert_time_base2handler(time_base)
 
+        # 按照年龄解析
+        age_res = self.parse_age(time_string)
+        if age_res:
+            return {"type": "time_age",
+                "time": age_res["age"],
+                "reasonable": age_res["reasonable"]}
+
+        # 解析年号+年份，比如 正德八年
+        china_reign_title = self.parse_china_reign_title(time_string)
+        if china_reign_title:
+            return {"type":"time_reign_title", 
+                    "year": china_reign_title["year"],
+                    "reign_title": china_reign_title["reign_title"]
+            }
         # 按 time_period 解析，未检测到后，按 time_delta 解析
         period_res, blur_time = self.parse_time_period(time_string, period_results_num=period_results_num)
         if period_res:
@@ -1239,6 +1256,32 @@ class TimeParser(object):
         second_string = self._seg_or_not_second(second_string)
 
         return first_string, second_string
+
+    def parse_age(self, time_string):
+        if not time_string.endswith("岁"):
+            return None
+        try:
+            age = int(time_string[:-1])
+            return {"age":age, "reasonable": True if 0<=age<=130 else False}
+        except:
+            pass
+        try:
+            age = cn2an.cn2an(time_string[:-1])
+            return {"age":age, "reasonable": True if 0<=age<=130 else False}
+        except:
+            pass
+        return None
+
+    def parse_china_reign_title(self, time_string):
+        for title,_ in self.china_reign_title.items():
+            if time_string.startswith(title) and time_string.endswith('年'):
+                try:
+                    nian = time_string[len(title):-1]
+                    nian = cn2an.cn2an(nian)
+                    return {"year": nian, "reign_title": title}
+                except:
+                    continue
+        return None
 
     def parse_time_period(self, time_string, period_results_num=None):
         """ 判断字符串是否为 time_period，若是则返回结果，若不是则返回 None，跳转到其它类型解析。 """
@@ -1700,7 +1743,6 @@ class TimeParser(object):
             ymd_string = TimeParser.parse_pattern(time_string, ymd_pattern)
             for (hms_pattern, hms_func) in hms_pattern_norm_funcs:
                 hms_string = TimeParser.parse_pattern(time_string, hms_pattern)
-
                 if len(ymd_string) + len(hms_string) > len(cur_ymd_string) + len(cur_hms_string):
                     cur_hms_func = hms_func
                     cur_ymd_func = ymd_func
@@ -1715,7 +1757,6 @@ class TimeParser(object):
 
             if break_flag:
                 break
-
         if len(''.join([cur_ymd_string, cur_hms_string])) < len(time_string.replace(' ', '')):
             if self.chinese_char_pattern.search(time_string):
                 # 若搜索到中文，则 `-` 等符号可用作 time_span 的分隔符，可以不用处理判断字符串未匹配的异常情况
