@@ -20,12 +20,14 @@ TODO:
 import re
 import time
 import cn2an
+import jieba
 
 from jionlp.rule.rule_pattern import TIME_CHAR_STRING, \
     FAKE_POSITIVE_START_STRING, FAKE_POSITIVE_END_STRING, REIGN_TITLE_CHAR_STRING
 from jionlp.rule import extract_parentheses, remove_parentheses
 from jionlp.gadget.time_parser import TimeParser
 from enum import Enum
+from jionlp.util.funcs import Q2B
 
 
 class FilteredReason(Enum) :
@@ -36,6 +38,8 @@ class FilteredReason(Enum) :
     de_in_start_or_end = "的_in_start_or_end"
     paren_not_match = "paren_not_match"
     symbol_after_chinese = "symbol_after_chinese"
+    cut_prev_word = "cut_prev_word"
+    cut_post_word = "cut_post_word"
 
 
 class TimeExtractor(object):
@@ -81,6 +85,7 @@ class TimeExtractor(object):
     """
     def __init__(self):
         self.parse_time = None
+        self.forbidden_range = []
 
     def _prepare(self):
         self.parse_time = TimeParser()
@@ -117,6 +122,13 @@ class TimeExtractor(object):
         if self.parse_time is None:
             self._prepare()
 
+        text = "".join([Q2B(u) for u in text])
+        self.widx = []
+        for i, w in enumerate(jieba.cut(text)):
+            self.widx.extend([i for _ in range(len(w))])
+        #print(self.widx)
+        #print(jieba.lcut(text))
+        self.percent_match(text)
         candidates_list = self.extract_time_candidates(text)
 
         time_entity_list = list()
@@ -130,7 +142,8 @@ class TimeExtractor(object):
                 true_string, result, offset = self.grid_search(
                     candidate['time_candidate'][bias:], time_base=time_base,
                     ret_type=ret_type, ret_future=ret_future,
-                    period_results_num=period_results_num)
+                    period_results_num=period_results_num,
+                    base_offset=candidate['offset'][0]+bias)
 
                 if true_string is not None:
 
@@ -147,20 +160,22 @@ class TimeExtractor(object):
                             bias += offset[1]
                             continue
                     dig_chn_mixed = self.digit_chinese_mixed(true_string)
+                    has_wrong_info = result["something_wrong"] or dig_chn_mixed if "something_wrong" in result else dig_chn_mixed
                     if with_parsing:
                         time_entity_list.append(
                             {'text': true_string,
                              'offset': [candidate['offset'][0] + bias + offset[0],
                                         candidate['offset'][0] + bias + offset[1]],
                              'type': result['type'],
-                             'dcmix': dig_chn_mixed,
+                             'something_wrong': has_wrong_info,
                              'detail': result})
                     else:
                         time_entity_list.append(
                             {'text': true_string,
                              'offset': [candidate['offset'][0] + bias + offset[0],
                                         candidate['offset'][0] + bias + offset[1]],
-                             'dcmix': dig_chn_mixed,
+                             'something_wrong': has_wrong_info,
+                             'detail': result,
                              'type': result['type']})
                     bias += offset[1]
                 else:
@@ -171,7 +186,7 @@ class TimeExtractor(object):
         #     print(item)
         return time_entity_list
 
-    def _filter(self, sub_string):
+    def _filter(self, sub_string, offset, base_offset):
         """ 对某些易造成实体错误的字符进行过滤。
         此问题产生的原因在于，parse_time 工具对某些不符合要求的字符串也能成功解析，造成假阳性。
         """
@@ -201,6 +216,18 @@ class TimeExtractor(object):
             self.filtered_reason = FilteredReason.symbol_after_chinese
             return False
 
+        # 时间片段不能切割词语，比如"希腊月GDP"中"腊月"切割了"希腊"
+        rawoffset = [x+base_offset for x in offset]
+        #print("IN filter:",sub_string, rawoffset)
+        if rawoffset[0] > 0 and self.widx[rawoffset[0]] == self.widx[rawoffset[0]-1]:
+            #print(matched_res.group(), " 0cut word: ", "".join([text[jj] for jj in range(len(text)) if widx[jj] == widx[start_idx]]))
+            self.filtered_reason = FilteredReason.cut_prev_word
+            return False
+        if rawoffset[1] < len(self.widx) and self.widx[rawoffset[1]-1] == self.widx[rawoffset[1]]:
+            #print(matched_res.group(), " 1cut word: ", "".join([text[jj] for jj in range(len(text)) if widx[jj] == widx[end_idx-1]]))
+            self.filtered_reason = FilteredReason.cut_post_word
+            return False
+
         self.filtered_reason = FilteredReason.none
         return True
 
@@ -215,50 +242,52 @@ class TimeExtractor(object):
             start, end = m.span()
             a = a[:start]+a[end-4:end] +"/" +a[start:end-5]+a[end:]
         return a
-    
-    def grid_search(self, time_candidate, time_base=time.time(),
-                    ret_type='str', ret_future=False, period_results_num=None):
-        def replace_parse(sub_string_for_parse):
-            p = re.compile(r"([0-9]+|[一二三四五六七八九十〇零]+)")
-            for m in re.finditer(p, sub_string_for_parse):
-                start, end = m.span()
-                number = 0
-                try:
-                    number = int(sub_string_for_parse[start:end])
-                except:
-                    try:
-                        number = cn2an.cn2an(sub_string_for_parse[start:end])
-                    except:
-                        continue
-                if number > 300:
-                    continue
-                replaced_sub_string = sub_string_for_parse[:start] + "12" + sub_string_for_parse[end:]
-                #print(" -> replaced:", replaced_sub_string)
-                try:
-                    result = self.parse_time(
-                        replaced_sub_string, time_base=time_base, strict=True,
-                        ret_type=ret_type, ret_future=ret_future,
-                        period_results_num=period_results_num)
-                    print(result)
-                    return "", {"type":"time_maybe_wrong"}, None
-                except:
-                    continue
+
+    def replace_parse(self, sub_string_for_parse, time_base, strict,
+                    ret_type, ret_future, period_results_num):
+        p = re.compile(r"([0-9]+|[一二三四五六七八九十〇零]+)")
+        for m in re.finditer(p, sub_string_for_parse):
+            start, end = m.span()
+            number = 0
             try:
-                na = sub_string_for_parse
-                for _ in range(100):
-                    m = re.search(re.compile(r"\d+"), na)
-                    if m:
-                        na = na[:m.span()[0]] + cn2an.an2cn(m.group(0)) + na[m.span()[1]:]
-                    else:
-                        break
-                #print(" -> replaced:", na)
-                result = self.parse_time(
-                        na, time_base=time_base, strict=True,
-                        ret_type=ret_type, ret_future=ret_future,
-                        period_results_num=period_results_num)
-                return "", {"type":"time_maybe_wrong"}, None
+                number = int(sub_string_for_parse[start:end])
             except:
-                pass
+                try:
+                    number = cn2an.cn2an(sub_string_for_parse[start:end])
+                except:
+                    continue
+            if end < len(sub_string_for_parse) and sub_string_for_parse[end] == '年':
+                if number > 50000:
+                    continue
+            elif number > 300:
+                continue
+            replaced_sub_string = sub_string_for_parse[:start] + "12" + sub_string_for_parse[end:]
+            #print(" -> replaced:", replaced_sub_string)
+            try:
+                result = self.parse_time(
+                    replaced_sub_string, time_base=time_base, strict=True,
+                    ret_type=ret_type, ret_future=ret_future,
+                    period_results_num=period_results_num)
+                return result, replaced_sub_string
+            except:
+                continue
+        try:
+            na = sub_string_for_parse
+            for _ in range(100):
+                m = re.search(re.compile(r"\d+"), na)
+                if m:
+                    na = na[:m.span()[0]] + cn2an.an2cn(m.group(0)) + na[m.span()[1]:]
+                else:
+                    break
+            #print(" -> replaced:", na)
+            result = self.parse_time(
+                    na, time_base=time_base, strict=True,
+                    ret_type=ret_type, ret_future=ret_future,
+                    period_results_num=period_results_num)
+            return result, na
+        except:
+            pass
+        try:
             na = sub_string_for_parse
             for _ in range(100):
                 m = re.search(re.compile(r"[一二三四五六七八九十百千万〇零]+"), na)
@@ -266,27 +295,29 @@ class TimeExtractor(object):
                     na = na[:m.span()[0]] + str(cn2an.cn2an(m.group(0))) + na[m.span()[1]:]
                 else:
                     break
-            try:
-                #print(" -> replaced:", na)
-                result = self.parse_time(
-                        na, time_base=time_base, strict=True,
-                        ret_type=ret_type, ret_future=ret_future,
-                        period_results_num=period_results_num)
-                return "", {"type":"time_maybe_wrong"}, None
-            except (ValueError, Exception):
-                pass
-            return None, None, None
-            
+            #print(" -> replaced:", na)
+            result = self.parse_time(
+                    na, time_base=time_base, strict=True,
+                    ret_type=ret_type, ret_future=ret_future,
+                    period_results_num=period_results_num)
+            return result, na
+        except (ValueError, Exception):
+            pass
+        return None, None
+    
+    def grid_search(self, time_candidate, time_base=time.time(),
+                    ret_type='str', ret_future=False, period_results_num=None,
+                    base_offset=0):
         """ 全面搜索候选时间字符串，从长至短，较优 """
         length = len(time_candidate)
         for i in range(length):  # 控制总长，若想控制单字符的串也被返回考察，此时改为 length + 1
             for j in range(i):  # 控制偏移
                 offset = [j, length - i + j + 1]
                 sub_string = time_candidate[j: offset[1]]
-
+                #print(" --> grid_search:", sub_string)
                 # 处理假阳性。检查子串，对某些产生歧义的内容进行过滤。
                 # 原因在于，parse_time 会对某些不符合要求的字符串做正确解析.
-                if not self._filter(sub_string):
+                if not self._filter(sub_string, offset, base_offset):
                     #print("filted:[{}]".format(sub_string), self.filtered_reason)
                     continue
 
@@ -305,7 +336,8 @@ class TimeExtractor(object):
                 sub_parentheses = extract_parentheses(sub_string_for_parse, parentheses='()（）')
                 if '周' in ''.join(sub_parentheses) or '星期' in ''.join(sub_parentheses):
                     sub_string_for_parse = remove_parentheses(sub_string_for_parse, parentheses='()（）')
-
+                    if len(sub_string_for_parse) < 1:
+                        continue
                 # rule 6: 对于数字为起始或结尾的字符串，过滤之。
                 # 如：342127197212178212 将 2017 和 1972 抽取为年份
                 if self.num_pattern.search(sub_string_for_parse[0]):
@@ -324,15 +356,20 @@ class TimeExtractor(object):
                         period_results_num=period_results_num)
 
                     return sub_string, result, offset
-                except (ValueError, Exception) as e:
+                except Exception:
                     #print(e, "try again after replace")
                     # 如果替换掉部分数字，结果可解析，也认为是正确的
-                    r1, r2, r3 = replace_parse(sub_string_for_parse)
-                    #print("result:", r2)
-                    if r1 == None:
+                    replaced_result, replaced_str = self.replace_parse(sub_string_for_parse, 
+                        time_base=time_base, strict=True,
+                        ret_type=ret_type, ret_future=ret_future,
+                        period_results_num=period_results_num)
+                    #print(replaced_result, replaced_str)
+                    if replaced_result is None:
                         continue
                     else:
-                        return sub_string, r2, offset
+                        replaced_result["something_wrong"] = True
+                        replaced_result["replaced"] = replaced_str
+                        return sub_string, replaced_result, offset
 
         return None, None, None
 
@@ -360,6 +397,17 @@ class TimeExtractor(object):
 
         return None, None, None
 
+    def percent_match(self, text):
+        p = re.compile(r"(百分之[零一二三四五六七八九十〇点]+|[点零一二三四五六七八九十〇]+个百分点)")
+        for m in re.finditer(p, text):
+            #print(m.group(), m.span())
+            self.forbidden_range.append(m.span())
+    def overlap_forbidden_range(self, start_idx, end_idx):
+        for r in self.forbidden_range:
+            if not(start_idx >= r[1] or end_idx <= r[0]):
+                return True
+        return False
+
     def extract_time_candidates(self, text):
         """ 获取所有的候选时间字符串，其中包含了时间实体 """
         text_length = len(text)
@@ -369,17 +417,21 @@ class TimeExtractor(object):
             matched_res = self.time_string_pattern.search(text[idx_count:])
             # print(matched_res)
             if matched_res is not None:
+                start_idx = idx_count + matched_res.span()[0]
+                end_idx = idx_count + matched_res.span()[1]
+                if self.overlap_forbidden_range(start_idx, end_idx):
+                    idx_count += matched_res.span()[1]
+                    #print(" --> overlap:", matched_res.group(), start_idx, end_idx)
+                    continue
                 if len(matched_res.group()) > 1:
                     time_candidates_list.append(
                         {'time_candidate': matched_res.group(),
-                         'offset': [idx_count + matched_res.span()[0],
-                                    idx_count + matched_res.span()[1]]})
+                         'offset': [start_idx, end_idx]})
                 elif matched_res.group() in self.single_char_time:
                     # 可能误打 “春”、“夏” 等单字符时间表达，故在此加入
                     time_candidates_list.append(
                         {'time_candidate': matched_res.group(),
-                         'offset': [idx_count + matched_res.span()[0],
-                                    idx_count + matched_res.span()[1]]})
+                         'offset': [start_idx, end_idx]})
                 idx_count += matched_res.span()[1]
             else:
                 break

@@ -1382,7 +1382,7 @@ class TimeParser(object):
 
                 except Exception as e:
                     # 即无法解析的字符串，按照原字符串进行返回
-                    logging.error(traceback.format_exc())
+                    #logging.error(traceback.format_exc())
 
                     if self.string_strict:
                         # 但根据某些情况，此处加强字符串审核，直接报错。如 “每年6.” 等。其中 “6” 并非有意义时间字符串。
