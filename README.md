@@ -11,7 +11,7 @@
     <a alt="Downloads">
         <img src="https://pepy.tech/badge/jionlp/month" /></a>
     <a alt="Version">
-        <img src="https://img.shields.io/badge/version-1.4.23-green" /></a>
+        <img src="https://img.shields.io/badge/version-1.4.25-green" /></a>
     <a href="https://github.com/dongrixinyu/JioNLP/pulse" alt="Activity">
         <img src="https://img.shields.io/github/commit-activity/m/dongrixinyu/JioNLP?color=blue" /></a>
 </p>
@@ -276,7 +276,7 @@ $ jio_help
 - 非常欢迎各位 NLP 开发者和研究者 **合作完善本工具包，添加新功能** 。
 
 ### 如本工具对您有帮助，请点一下右上角 star ⭐
-### 或者扫码请作者喝杯咖啡 (●'◡'●)，谢谢啦 ~~
+### 或者扫码请作者喝杯咖啡 (●'◡'●)，谢谢啦！推荐优先使用【支付宝】 ~~
 - 感谢[致谢](../../wiki/致谢篇)名单中赞助的小伙伴们，你们的打赏让我更有动力
 
 ![image](../../blob/master/image/payment_code.jpg)
