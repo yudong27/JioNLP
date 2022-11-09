@@ -3,3 +3,4 @@ jiojio
 requests
 zipfile36
 cn2an
+jieba
